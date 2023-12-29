@@ -8,4 +8,3 @@ tarsau: tarsau.c
 
 clean:
 	rm -f tarsau
-

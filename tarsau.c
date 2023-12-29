@@ -16,6 +16,7 @@ typedef struct {
 
 void createArchive(int argc, char *argv[]);
 void extractArchive(int argc, char *argv[]);
+int isTextFile(const char *filename);
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
@@ -36,59 +37,78 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void createArchive(int argc, char *argv[]) {
-    if (argc < 6 || argc > MAX_FILES + 5) {
-        fprintf(stderr, "Invalid number of arguments for archiving.\n");
-        exit(EXIT_FAILURE);
-    }
+int isTextFile(const char *filename) {
+    char command[256];
+    snprintf(command, sizeof(command), "file %s | grep -qE 'text|empty'", filename);
 
-    
+    return system(command) == 0;
+}
+
+
+void createArchive(int argc, char *argv[]) {
     char *outputFileName = "a.sau";
-    int fileCount = argc - 5;
+    int fileCount = 0;
     FileInfo fileInfos[MAX_FILES];
 
-    for (int i = 2; i < argc - 2; ++i) {
-        FILE *file = fopen(argv[i], "r");
-        if (!file) {
-            perror("Error opening file");
-            exit(EXIT_FAILURE);
-        }
-
-        
-        char c;
-        while ((c = fgetc(file)) != EOF) {
-            if (c > 127) {
+    // Parse command line arguments
+    for (int i = 2; i < argc; ++i) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            outputFileName = argv[i + 1];
+            i++;  // Skip the next argument, which is the output file name
+        } else {
+            // Check if the file is a text file
+            if (!isTextFile(argv[i])) {
                 fprintf(stderr, "File %s is not a text file.\n", argv[i]);
                 exit(EXIT_FAILURE);
             }
+
+            // Store file information
+            strncpy(fileInfos[fileCount].filename, argv[i], sizeof(fileInfos[fileCount].filename) - 1);
+            fileInfos[fileCount].filename[sizeof(fileInfos[fileCount].filename) - 1] = '\0';
+
+            struct stat fileStat;
+            if (stat(argv[i], &fileStat) == -1) {
+                perror("Error getting file information");
+                exit(EXIT_FAILURE);
+            }
+
+            // Convert mode to permission string
+            snprintf(fileInfos[fileCount].permissions, sizeof(fileInfos[fileCount].permissions), "%c%c%c%c%c%c%c%c%c",
+                (fileStat.st_mode & S_IRUSR) ? 'r' : '-',
+                (fileStat.st_mode & S_IWUSR) ? 'w' : '-',
+                (fileStat.st_mode & S_IXUSR) ? 'x' : '-',
+                (fileStat.st_mode & S_IRGRP) ? 'r' : '-',
+                (fileStat.st_mode & S_IWGRP) ? 'w' : '-',
+                (fileStat.st_mode & S_IXGRP) ? 'x' : '-',
+                (fileStat.st_mode & S_IROTH) ? 'r' : '-',
+                (fileStat.st_mode & S_IWOTH) ? 'w' : '-',
+                (fileStat.st_mode & S_IXOTH) ? 'x' : '-'
+            );
+
+            fileInfos[fileCount].permissions[sizeof(fileInfos[fileCount].permissions) - 1] = '\0';
+
+            FILE *currentFile = fopen(argv[i], "rb");
+            fseek(currentFile, 0, SEEK_END);
+            fileInfos[fileCount].size = ftell(currentFile);
+            fclose(currentFile);
+
+            fileCount++;
         }
-
-        fclose(file);
-
-        
-        strncpy(fileInfos[i - 2].filename, argv[i], sizeof(fileInfos[i - 2].filename) - 1);
-        fileInfos[i - 2].filename[sizeof(fileInfos[i - 2].filename) - 1] = '\0';
-        strncpy(fileInfos[i - 2].permissions, "rw-r--r--", sizeof(fileInfos[i - 2].permissions) - 1);
-        fileInfos[i - 2].permissions[sizeof(fileInfos[i - 2].permissions) - 1] = '\0';
-
-        FILE *currentFile = fopen(argv[i], "r");
-        fseek(currentFile, 0, SEEK_END);
-        fileInfos[i - 2].size = ftell(currentFile);
-        fclose(currentFile);
     }
 
-    
+    // Calculate total size of input files
     size_t totalSize = 0;
     for (int i = 0; i < fileCount; ++i) {
         totalSize += fileInfos[i].size;
     }
 
+    // Check if the total size exceeds the limit
     if (totalSize > MAX_SIZE) {
         fprintf(stderr, "Total size of input files exceeds the limit.\n");
         exit(EXIT_FAILURE);
     }
 
-    
+    // Create or overwrite the archive file
     FILE *archive = fopen(outputFileName, "wb");
     if (!archive) {
         perror("Error creating archive file");
@@ -96,13 +116,15 @@ void createArchive(int argc, char *argv[]) {
     }
 
     
-    fprintf(archive, "%010zu", ftell(archive) + fileCount * (sizeof(FileInfo) + 3));
-
+    fprintf(archive, "%010zu|", ftell(archive) + fileCount * (sizeof(FileInfo) + 3));
     for (int i = 0; i < fileCount; ++i) {
-        fprintf(archive, "|%s,%s,%zu|", fileInfos[i].filename, fileInfos[i].permissions, fileInfos[i].size);
+        fprintf(archive, "%s,%s,%zu|", fileInfos[i].filename, fileInfos[i].permissions, fileInfos[i].size);
     }
 
-    
+
+    fprintf(archive, "\n");
+
+    // Write the archived files to the archive file
     for (int i = 0; i < fileCount; ++i) {
         FILE *currentFile = fopen(fileInfos[i].filename, "rb");
         if (!currentFile) {
@@ -110,9 +132,11 @@ void createArchive(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        char c;
-        while ((c = fgetc(currentFile)) != EOF) {
-            fputc(c, archive);
+     
+        size_t bytesRead;
+        unsigned char buffer[1024];
+        while ((bytesRead = fread(buffer, 1, sizeof(buffer), currentFile)) > 0) {
+            fwrite(buffer, 1, bytesRead, archive);
         }
 
         fclose(currentFile);
@@ -132,31 +156,26 @@ void extractArchive(int argc, char *argv[]) {
     char *inputFileName = argv[2];
     char *outputDirectory = argv[3];
 
-    
     FILE *archive = fopen(inputFileName, "rb");
     if (!archive) {
         perror("Error opening archive file");
         exit(EXIT_FAILURE);
     }
 
-    
     size_t organizationSize;
     fscanf(archive, "%010zu", &organizationSize);
 
-    
     if (mkdir(outputDirectory, 0755) == -1) {
         perror("Error creating output directory");
         exit(EXIT_FAILURE);
     }
 
-    
     if (chdir(outputDirectory) == -1) {
         perror("Error changing directory");
         exit(EXIT_FAILURE);
     }
 
-    
-    fseek(archive, 10, SEEK_SET); 
+    fseek(archive, 10, SEEK_SET);
     char buffer[1024];
     fgets(buffer, sizeof(buffer), archive);
 
@@ -171,7 +190,6 @@ void extractArchive(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        
         for (size_t i = 0; i < fileInfo.size; ++i) {
             char c = fgetc(archive);
             fputc(c, outputFile);
