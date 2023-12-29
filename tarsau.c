@@ -223,9 +223,30 @@ void extractArchive(int argc, char *argv[])
 
         fclose(outputFile);
 
+        // set the permissions
+        mode_t mode = 0;
+        for (int i = 0; i < 9; i++)
+        { // permissions string is 9 characters
+            if (fileInfo.permissions[i] != '-')
+            {
+                switch (i % 3)
+                {
+                case 0:
+                    mode |= (1 << (8 - i));
+                    break;
+                case 1:
+                    mode |= (1 << (8 - i));
+                    break;
+                case 2:
+                    mode |= (1 << (8 - i));
+                    break;
+                }
+            }
+        }
+        chmod(fileInfo.filename, mode);
+
         token = strtok(NULL, "|");
     }
-
     fclose(archive);
 
     printf("Files opened in the %s directory.\n", outputDirectory);
