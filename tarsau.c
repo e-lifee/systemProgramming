@@ -60,35 +60,34 @@ void createArchive(int argc, char *argv[])
     int fileCount = 0;
     FileInfo fileInfos[MAX_FILES];
 
-    // Parse command line arguments
     for (int i = 2; i < argc; ++i)
     {
+        char fullPath[260];
+        snprintf(fullPath, sizeof(fullPath), "txt/%s", argv[i]);
+
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
         {
             outputFileName = argv[i + 1];
-            i++; // Skip the next argument, which is the output file name
+            i++;
         }
         else
         {
-            // Check if the file is a text file
-            if (!isTextFile(argv[i]))
+            if (!isTextFile(fullPath))
             {
-                fprintf(stderr, "File %s is not a text file.\n", argv[i]);
+                fprintf(stderr, "File %s is not a text file.\n", fullPath);
                 exit(EXIT_FAILURE);
             }
 
-            // Store file information
-            strncpy(fileInfos[fileCount].filename, argv[i], sizeof(fileInfos[fileCount].filename) - 1);
+            strncpy(fileInfos[fileCount].filename, fullPath, sizeof(fileInfos[fileCount].filename) - 1);
             fileInfos[fileCount].filename[sizeof(fileInfos[fileCount].filename) - 1] = '\0';
 
             struct stat fileStat;
-            if (stat(argv[i], &fileStat) == -1)
+            if (stat(fullPath, &fileStat) == -1)
             {
                 perror("Error getting file information");
                 exit(EXIT_FAILURE);
             }
 
-            // Convert mode to permission string
             snprintf(fileInfos[fileCount].permissions, sizeof(fileInfos[fileCount].permissions), "%c%c%c%c%c%c%c%c%c",
                      (fileStat.st_mode & S_IRUSR) ? 'r' : '-',
                      (fileStat.st_mode & S_IWUSR) ? 'w' : '-',
@@ -100,32 +99,24 @@ void createArchive(int argc, char *argv[])
                      (fileStat.st_mode & S_IWOTH) ? 'w' : '-',
                      (fileStat.st_mode & S_IXOTH) ? 'x' : '-');
 
-            fileInfos[fileCount].permissions[sizeof(fileInfos[fileCount].permissions) - 1] = '\0';
-
-            FILE *currentFile = fopen(argv[i], "rb");
-            fseek(currentFile, 0, SEEK_END);
-            fileInfos[fileCount].size = ftell(currentFile);
-            fclose(currentFile);
+            fileInfos[fileCount].size = fileStat.st_size;
 
             fileCount++;
         }
     }
 
-    // Calculate total size of input files
     size_t totalSize = 0;
     for (int i = 0; i < fileCount; ++i)
     {
         totalSize += fileInfos[i].size;
     }
 
-    // Check if the total size exceeds the limit
     if (totalSize > MAX_SIZE)
     {
         fprintf(stderr, "Total size of input files exceeds the limit.\n");
         exit(EXIT_FAILURE);
     }
 
-    // Create or overwrite the archive file
     FILE *archive = fopen(outputFileName, "wb");
     if (!archive)
     {
@@ -133,7 +124,7 @@ void createArchive(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    fprintf(archive, "%010zu|", ftell(archive) + totalSize);
+    fprintf(archive, "%010zu|", totalSize);
     for (int i = 0; i < fileCount; ++i)
     {
         fprintf(archive, "%s,%s,%zu|", fileInfos[i].filename, fileInfos[i].permissions, fileInfos[i].size);
@@ -141,7 +132,6 @@ void createArchive(int argc, char *argv[])
 
     fprintf(archive, "\n");
 
-    // Write the archived files to the archive file
     for (int i = 0; i < fileCount; ++i)
     {
         FILE *currentFile = fopen(fileInfos[i].filename, "rb");
@@ -151,8 +141,8 @@ void createArchive(int argc, char *argv[])
             exit(EXIT_FAILURE);
         }
 
-        size_t bytesRead;
         unsigned char buffer[1024];
+        size_t bytesRead;
         while ((bytesRead = fread(buffer, 1, sizeof(buffer), currentFile)) > 0)
         {
             fwrite(buffer, 1, bytesRead, archive);
@@ -162,7 +152,6 @@ void createArchive(int argc, char *argv[])
     }
 
     fclose(archive);
-
     printf("The files have been merged.\n");
 }
 
@@ -199,7 +188,7 @@ void extractArchive(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    fseek(archive, 11, SEEK_SET); // Skip past the organization size
+    fseek(archive, 11, SEEK_SET);
     char line[1024];
     while (fgets(line, sizeof(line), archive) != NULL)
     {
@@ -213,14 +202,10 @@ void extractArchive(int argc, char *argv[])
                 exit(EXIT_FAILURE);
             }
 
-            // Validate filename
-            if (strchr(fileInfo.filename, '/') || strstr(fileInfo.filename, ".."))
-            {
-                fprintf(stderr, "Invalid filename in archive: %s\n", fileInfo.filename);
-                exit(EXIT_FAILURE);
-            }
+            char fullPath[260];
+            snprintf(fullPath, sizeof(fullPath), "txt/%s", fileInfo.filename);
 
-            FILE *outputFile = fopen(fileInfo.filename, "wb");
+            FILE *outputFile = fopen(fullPath, "wb");
             if (!outputFile)
             {
                 perror("Error creating output file");
@@ -240,7 +225,6 @@ void extractArchive(int argc, char *argv[])
 
             fclose(outputFile);
 
-            // Set permissions
             mode_t mode = 0;
             for (int i = 0; i < 9; i++)
             {
@@ -249,14 +233,9 @@ void extractArchive(int argc, char *argv[])
                     mode |= (1 << (8 - i));
                 }
             }
-            chmod(fileInfo.filename, mode);
+            chmod(fullPath, mode);
 
             token = strtok(NULL, "|");
-        }
-        if (token && strcmp(token, "\n") != 0)
-        {
-            // Handle case where last file info is followed by EOF without newline
-            break;
         }
     }
     fclose(archive);
