@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define MAX_FILES 32
 #define MAX_SIZE 200 * 1024 * 1024 // 200 MB
@@ -184,9 +185,9 @@ void extractArchive(int argc, char *argv[])
     }
 
     size_t organizationSize;
-    fscanf(archive, "%010zu", &organizationSize);
+    fscanf(archive, "%010zu|", &organizationSize);
 
-    if (mkdir(outputDirectory, 0755) == -1)
+    if (mkdir(outputDirectory, 0755) == -1 && errno != EEXIST)
     {
         perror("Error creating output directory");
         exit(EXIT_FAILURE);
@@ -198,54 +199,65 @@ void extractArchive(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    fseek(archive, 10, SEEK_SET);
-    char buffer[1024];
-    fgets(buffer, sizeof(buffer), archive);
-
-    char *token = strtok(buffer, "|");
-    while (token != NULL)
+    fseek(archive, 11, SEEK_SET); // Skip past the organization size
+    char line[1024];
+    while (fgets(line, sizeof(line), archive) != NULL)
     {
-        FileInfo fileInfo;
-        sscanf(token, "%[^,],%[^,],%zu", fileInfo.filename, fileInfo.permissions, &fileInfo.size);
-
-        FILE *outputFile = fopen(fileInfo.filename, "wb");
-        if (!outputFile)
+        char *token = strtok(line, "|");
+        while (token != NULL && strcmp(token, "\n") != 0)
         {
-            perror("Error creating output file");
-            exit(EXIT_FAILURE);
-        }
-
-        for (size_t i = 0; i < fileInfo.size; ++i)
-        {
-            char c = fgetc(archive);
-            fputc(c, outputFile);
-        }
-
-        fclose(outputFile);
-
-        // set the permissions
-        mode_t mode = 0;
-        for (int i = 0; i < 9; i++)
-        { // permissions string is 9 characters
-            if (fileInfo.permissions[i] != '-')
+            FileInfo fileInfo;
+            if (sscanf(token, "%[^,],%[^,],%zu", fileInfo.filename, fileInfo.permissions, &fileInfo.size) != 3)
             {
-                switch (i % 3)
+                fprintf(stderr, "Error parsing file info: %s\n", token);
+                exit(EXIT_FAILURE);
+            }
+
+            // Validate filename
+            if (strchr(fileInfo.filename, '/') || strstr(fileInfo.filename, ".."))
+            {
+                fprintf(stderr, "Invalid filename in archive: %s\n", fileInfo.filename);
+                exit(EXIT_FAILURE);
+            }
+
+            FILE *outputFile = fopen(fileInfo.filename, "wb");
+            if (!outputFile)
+            {
+                perror("Error creating output file");
+                exit(EXIT_FAILURE);
+            }
+
+            for (size_t i = 0; i < fileInfo.size; i++)
+            {
+                int c = fgetc(archive);
+                if (c == EOF)
                 {
-                case 0:
+                    fprintf(stderr, "Unexpected end of file\n");
+                    exit(EXIT_FAILURE);
+                }
+                fputc(c, outputFile);
+            }
+
+            fclose(outputFile);
+
+            // Set permissions
+            mode_t mode = 0;
+            for (int i = 0; i < 9; i++)
+            {
+                if (fileInfo.permissions[i] != '-')
+                {
                     mode |= (1 << (8 - i));
-                    break;
-                case 1:
-                    mode |= (1 << (8 - i));
-                    break;
-                case 2:
-                    mode |= (1 << (8 - i));
-                    break;
                 }
             }
-        }
-        chmod(fileInfo.filename, mode);
+            chmod(fileInfo.filename, mode);
 
-        token = strtok(NULL, "|");
+            token = strtok(NULL, "|");
+        }
+        if (token && strcmp(token, "\n") != 0)
+        {
+            // Handle case where last file info is followed by EOF without newline
+            break;
+        }
     }
     fclose(archive);
 
